@@ -376,6 +376,7 @@ rcl_take_loaned_message(
   if (!rcl_subscription_is_valid(subscription)) {
     return RCL_RET_SUBSCRIPTION_INVALID;  // error already set
   }
+  RCL_CHECK_ARGUMENT_FOR_NULL(loaned_message, RCL_RET_INVALID_ARGUMENT);
   if (*loaned_message) {
     RCL_SET_ERROR_MSG("loaned message is already initialized");
     return RCL_RET_INVALID_ARGUMENT;
@@ -389,11 +390,7 @@ rcl_take_loaned_message(
   rmw_ret_t ret = rmw_take_loaned_message_with_info(
     subscription->impl->rmw_handle, loaned_message, &taken, message_info_local, allocation);
   if (ret != RMW_RET_OK) {
-    RCL_SET_ERROR_MSG(rmw_get_error_string().str);
-    if (RMW_RET_BAD_ALLOC == ret) {
-      return RCL_RET_BAD_ALLOC;
-    }
-    return RCL_RET_ERROR;
+    return ret;
   }
   RCUTILS_LOG_DEBUG_NAMED(
     ROS_PACKAGE_NAME, "Subscription loaned take succeeded: %s", taken ? "true" : "false");

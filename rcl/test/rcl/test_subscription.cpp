@@ -30,6 +30,7 @@
 #include "wait_for_entity_helpers.hpp"
 
 #include "./allocator_testing_utils.h"
+#include "./mocking_utils/patch.hpp"
 
 #ifdef RMW_IMPLEMENTATION
 # define CLASSNAME_(NAME, SUFFIX) NAME ## __ ## SUFFIX
@@ -526,6 +527,128 @@ TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_subscription
     ASSERT_EQ(
       std::string(test_string), std::string(msg_rcv.string_value.data, msg_rcv.string_value.size));
   }
+}
+
+/* Test for all failure modes in subscription take with loaned messages function.
+ */
+TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_bad_take_loaned_message) {
+  const char * topic = "rcl_loan";
+  const rosidl_message_type_support_t * ts = ROSIDL_GET_MSG_TYPE_SUPPORT(test_msgs, msg, Strings);
+  rcl_subscription_options_t subscription_options = rcl_subscription_get_default_options();
+
+  rcl_subscription_t subscription = rcl_get_zero_initialized_subscription();
+  rmw_ret_t ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+  ASSERT_EQ(RMW_RET_OK, ret) << rcl_get_error_string().str;
+
+  test_msgs__msg__Strings * loaned_message = nullptr;
+  void ** type_erased_loaned_message_pointer = reinterpret_cast<void **>(&loaned_message);
+  EXPECT_EQ(RCL_RET_SUBSCRIPTION_INVALID, rcl_take_loaned_message(
+    nullptr, type_erased_loaned_message_pointer, nullptr, nullptr));
+  rcl_reset_error();
+
+  EXPECT_EQ(RCL_RET_INVALID_ARGUMENT,
+            rcl_take_loaned_message(&subscription, nullptr, nullptr, nullptr));
+  rcl_reset_error();
+
+  test_msgs__msg__Strings dummy_message;
+  loaned_message = &dummy_message;
+  EXPECT_EQ(RCL_RET_INVALID_ARGUMENT, rcl_take_loaned_message(
+    &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+  rcl_reset_error();
+  loaned_message = nullptr;
+
+  {
+    rmw_ret_t return_code = RMW_RET_OK;
+    bool does_take = false;
+    auto mock = mocking_utils::patch(
+      "lib:rcl", rmw_take_loaned_message_with_info,
+      [&](auto, auto, bool * taken, auto && ...) {
+        *taken = does_take;
+        return return_code;
+      });
+
+    return_code = RMW_RET_BAD_ALLOC;
+    EXPECT_EQ(RCL_RET_BAD_ALLOC, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    return_code = RMW_RET_UNSUPPORTED;
+    EXPECT_EQ(RCL_RET_UNSUPPORTED, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    return_code = RMW_RET_ERROR;
+    EXPECT_EQ(RCL_RET_ERROR, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    return_code = RMW_RET_OK;
+
+    does_take = false;
+    EXPECT_EQ(RCL_RET_SUBSCRIPTION_TAKE_FAILED, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    does_take = true;
+    EXPECT_EQ(RCL_RET_OK, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr))
+        << rcl_get_error_string().str;
+  }
+
+  EXPECT_EQ(RCL_RET_OK, rcl_subscription_fini(&subscription, this->node_ptr)) << rcl_get_error_string().str;
+}
+
+/* Test for all failure modes in subscription return loaned messages function.
+ */
+TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_bad_return_loaned_message) {
+  const char * topic = "rcl_loan";
+  const rosidl_message_type_support_t * ts = ROSIDL_GET_MSG_TYPE_SUPPORT(test_msgs, msg, Strings);
+  rcl_subscription_options_t subscription_options = rcl_subscription_get_default_options();
+  rcl_subscription_t subscription = rcl_get_zero_initialized_subscription();
+  test_msgs__msg__Strings dummy_message;
+  test_msgs__msg__Strings__init(&dummy_message);
+  OSRF_TESTING_TOOLS_CPP_SCOPE_EXIT({
+    test_msgs__msg__Strings__fini(&dummy_message);
+  });
+  void * loaned_message = &dummy_message;
+
+  EXPECT_EQ(
+    RCL_RET_SUBSCRIPTION_INVALID, rcl_return_loaned_message_from_subscription(nullptr, loaned_message));
+  rcl_reset_error();
+
+  EXPECT_EQ(
+    RCL_RET_SUBSCRIPTION_INVALID, rcl_return_loaned_message_from_subscription(&subscription, loaned_message));
+  rcl_reset_error();
+
+  rmw_ret_t ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+  ASSERT_EQ(RMW_RET_OK, ret) << rcl_get_error_string().str;
+
+  EXPECT_EQ(
+    RCL_RET_INVALID_ARGUMENT, rcl_return_loaned_message_from_subscription(&subscription, nullptr));
+  rcl_reset_error();
+
+  {
+    rmw_ret_t return_code = RMW_RET_OK;
+    auto mock = mocking_utils::patch_and_return(
+      "lib:rcl", rmw_return_loaned_message_from_subscription, return_code);
+
+    return_code = RMW_RET_UNSUPPORTED;
+    EXPECT_EQ(
+      RCL_RET_UNSUPPORTED, rcl_return_loaned_message_from_subscription(&subscription, loaned_message));
+    rcl_reset_error();
+
+    return_code = RMW_RET_ERROR;
+    EXPECT_EQ(
+      RCL_RET_ERROR, rcl_return_loaned_message_from_subscription(&subscription, loaned_message));
+    rcl_reset_error();
+
+    return_code = RMW_RET_OK;
+    EXPECT_EQ(
+      RCL_RET_OK, rcl_return_loaned_message_from_subscription(&subscription, loaned_message))
+        << rcl_get_error_string().str;
+  }
+
+  EXPECT_EQ(RCL_RET_OK, rcl_subscription_fini(&subscription, this->node_ptr)) << rcl_get_error_string().str;
 }
 
 /* Basic test for subscription loan functions
