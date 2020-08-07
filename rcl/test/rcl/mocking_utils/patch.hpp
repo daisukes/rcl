@@ -216,11 +216,8 @@ public:
    * \return a mocking_utils::Patch instance.
    */
   explicit Patch(const std::string & target, std::function<ReturnT(ArgTs...)> proxy)
-  : proxy_(proxy)
+  : target_(target), proxy_(proxy)
   {
-    auto MMK_MANGLE(mock_type, create) =
-      PatchTraits<ID, ReturnT(ArgTs...)>::MMK_MANGLE(mock_type, create);
-    mock_ = mmk_mock(target.c_str(), mock_type);
   }
 
   // Copy construction and assignment are disabled.
@@ -252,18 +249,14 @@ public:
   /// Inject a @p replacement for the patched function.
   Patch & then_call(std::function<ReturnT(ArgTs...)> replacement) &
   {
-    auto type_erased_trampoline =
-      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
-    mmk_when(proxy_(any<ArgTs>()...), .then_call = type_erased_trampoline);
+    replace_with(replacement);
     return *this;
   }
 
   /// Inject a @p replacement for the patched function.
   Patch && then_call(std::function<ReturnT(ArgTs...)> replacement) &&
   {
-    auto type_erased_trampoline =
-      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
-    mmk_when(proxy_(any<ArgTs>()...), .then_call = type_erased_trampoline);
+    replace_with(replacement);
     return std::move(*this);
   }
 
@@ -273,7 +266,21 @@ private:
   template<typename T>
   T any() {return mmk_any(T);}
 
-  mock_type mock_;
+  void replace_with(std::function<ReturnT(ArgTs...)> replacement)
+  {
+    if (mock_) {
+      throw std::logic_error("Cannot configure patch more than once");
+    }
+    auto type_erased_trampoline =
+      reinterpret_cast<mmk_fn>(prepare_trampoline<ID>(replacement));
+    auto MMK_MANGLE(mock_type, create) =
+      PatchTraits<ID, ReturnT(ArgTs...)>::MMK_MANGLE(mock_type, create);
+    mock_ = mmk_mock(target_.c_str(), mock_type);
+    mmk_when(proxy_(any<ArgTs>()...), .then_call = type_erased_trampoline);
+  }
+
+  mock_type mock_{nullptr};
+  std::string target_;
   std::function<ReturnT(ArgTs...)> proxy_;
 };
 
@@ -338,6 +345,14 @@ auto make_patch(const std::string & target, std::function<SignatureT> proxy)
 /// Patch a `function` to always yield a given `return_code` in a given `scope`.
 #define patch_and_return(scope, function, return_code) \
   patch(scope, function, [&](auto && ...) {return return_code;})
+
+/// Patch a `function` to execute normally but always yield a given `return_code`
+/// in a given `scope`.
+#define inject_on_return(scope, function, return_code) \
+  patch(scope, function, ([&, base = function](auto && ... __args) { \
+    static_cast<void>(base(std::forward<decltype(__args)>(__args)...)); \
+    return return_code; \
+  }))
 
 }  // namespace mocking_utils
 

@@ -20,6 +20,7 @@
 
 #include "rcl/subscription.h"
 #include "rcl/rcl.h"
+#include "rmw/rmw.h"
 
 #include "test_msgs/msg/basic_types.h"
 #include "test_msgs/msg/strings.h"
@@ -144,6 +145,11 @@ TEST_F(
   rcl_reset_error();
 }
 
+MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(rcutils_allocator_t, ==)
+MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(rcutils_allocator_t, !=)
+MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(rcutils_allocator_t, <)
+MOCKING_UTILS_BOOL_OPERATOR_RETURNS_FALSE(rcutils_allocator_t, >)
+
 // Bad arguments for init and fini
 TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_subscription_bad_init) {
   const rosidl_message_type_support_t * ts =
@@ -174,9 +180,34 @@ TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_subscription
   EXPECT_EQ(RCL_RET_TOPIC_NAME_INVALID, ret) << rcl_get_error_string().str;
   rcl_reset_error();
 
-  rcl_subscription_options_t bad_subscription_options = rcl_subscription_get_default_options();
-  bad_subscription_options.allocator = get_failing_allocator();
-  ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &bad_subscription_options);
+  {
+    auto mock =
+      mocking_utils::patch_and_return("lib:rcl", rcutils_string_map_init, RCUTILS_RET_BAD_ALLOC);
+    ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+    EXPECT_EQ(RCL_RET_BAD_ALLOC, ret);
+    rcl_reset_error();
+  }
+  {
+    auto mock =
+      mocking_utils::inject_on_return("lib:rcl", rcutils_string_map_fini, RCUTILS_RET_ERROR);
+    ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+    EXPECT_EQ(RCL_RET_ERROR, ret);
+    rcl_reset_error();
+  }
+  {
+    auto mock =
+      mocking_utils::patch_and_return("lib:rcl", rmw_create_subscription, nullptr);
+    ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+    EXPECT_EQ(RCL_RET_ERROR, ret);
+    rcl_reset_error();
+  }
+  {
+    auto mock =
+        mocking_utils::patch_and_return("lib:rcl", rmw_subscription_get_actual_qos, RMW_RET_ERROR);
+    ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
+    EXPECT_EQ(RCL_RET_ERROR, ret);
+    rcl_reset_error();
+  }
 
   ret = rcl_subscription_init(&subscription, this->node_ptr, ts, topic, &subscription_options);
   ASSERT_EQ(RCL_RET_OK, ret) << rcl_get_error_string().str;
@@ -185,10 +216,19 @@ TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_subscription
   EXPECT_EQ(RCL_RET_ALREADY_INIT, ret) << rcl_get_error_string().str;
   rcl_reset_error();
 
+  EXPECT_EQ(RCL_RET_SUBSCRIPTION_INVALID, rcl_subscription_fini(nullptr, this->node_ptr));
+  rcl_reset_error();
   EXPECT_EQ(RCL_RET_NODE_INVALID, rcl_subscription_fini(&subscription, nullptr));
   rcl_reset_error();
   EXPECT_EQ(RCL_RET_NODE_INVALID, rcl_subscription_fini(&subscription, &invalid_node));
   rcl_reset_error();
+
+  {
+    auto mock =
+      mocking_utils::inject_on_return("lib:rcl", rmw_destroy_subscription, RMW_RET_ERROR);
+    EXPECT_EQ(RCL_RET_ERROR, rcl_subscription_fini(&subscription, this->node_ptr));
+    rcl_reset_error();
+  }
 
   ret = rcl_subscription_fini(&subscription, this->node_ptr);
   EXPECT_EQ(RCL_RET_OK, ret) << rcl_get_error_string().str;
@@ -558,41 +598,32 @@ TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_bad_take_loa
   loaned_message = nullptr;
 
   {
-    rmw_ret_t return_code = RMW_RET_OK;
-    bool does_take = false;
+    rmw_ret_t rmw_take_loaned_message_with_info_returns = RMW_RET_OK;
     auto mock = mocking_utils::patch(
       "lib:rcl", rmw_take_loaned_message_with_info,
       [&](auto, auto, bool * taken, auto && ...) {
-        *taken = does_take;
-        return return_code;
+        *taken = false;
+        return rmw_take_loaned_message_with_info_returns;
       });
 
-    return_code = RMW_RET_BAD_ALLOC;
-    EXPECT_EQ(RCL_RET_BAD_ALLOC, rcl_take_loaned_message(
-      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
-    rcl_reset_error();
-
-    return_code = RMW_RET_UNSUPPORTED;
-    EXPECT_EQ(RCL_RET_UNSUPPORTED, rcl_take_loaned_message(
-      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
-    rcl_reset_error();
-
-    return_code = RMW_RET_ERROR;
-    EXPECT_EQ(RCL_RET_ERROR, rcl_take_loaned_message(
-      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
-    rcl_reset_error();
-
-    return_code = RMW_RET_OK;
-
-    does_take = false;
     EXPECT_EQ(RCL_RET_SUBSCRIPTION_TAKE_FAILED, rcl_take_loaned_message(
       &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
     rcl_reset_error();
 
-    does_take = true;
-    EXPECT_EQ(RCL_RET_OK, rcl_take_loaned_message(
-      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr))
-        << rcl_get_error_string().str;
+    rmw_take_loaned_message_with_info_returns = RMW_RET_BAD_ALLOC;
+    EXPECT_EQ(RCL_RET_BAD_ALLOC, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    rmw_take_loaned_message_with_info_returns = RMW_RET_UNSUPPORTED;
+    EXPECT_EQ(RCL_RET_UNSUPPORTED, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
+
+    rmw_take_loaned_message_with_info_returns = RMW_RET_ERROR;
+    EXPECT_EQ(RCL_RET_ERROR, rcl_take_loaned_message(
+      &subscription, type_erased_loaned_message_pointer, nullptr, nullptr));
+    rcl_reset_error();
   }
 
   EXPECT_EQ(RCL_RET_OK, rcl_subscription_fini(&subscription, this->node_ptr)) << rcl_get_error_string().str;
@@ -628,24 +659,24 @@ TEST_F(CLASSNAME(TestSubscriptionFixture, RMW_IMPLEMENTATION), test_bad_return_l
   rcl_reset_error();
 
   {
-    rmw_ret_t return_code = RMW_RET_OK;
+    rmw_ret_t rmw_return_loaned_message_from_subscription_returns = RMW_RET_OK;
     auto mock = mocking_utils::patch_and_return(
-      "lib:rcl", rmw_return_loaned_message_from_subscription, return_code);
+      "lib:rcl", rmw_return_loaned_message_from_subscription,
+      rmw_return_loaned_message_from_subscription_returns);
 
-    return_code = RMW_RET_UNSUPPORTED;
+    EXPECT_EQ(
+      RCL_RET_OK, rcl_return_loaned_message_from_subscription(&subscription, loaned_message))
+        << rcl_get_error_string().str;
+
+    rmw_return_loaned_message_from_subscription_returns = RMW_RET_UNSUPPORTED;
     EXPECT_EQ(
       RCL_RET_UNSUPPORTED, rcl_return_loaned_message_from_subscription(&subscription, loaned_message));
     rcl_reset_error();
 
-    return_code = RMW_RET_ERROR;
+    rmw_return_loaned_message_from_subscription_returns = RMW_RET_ERROR;
     EXPECT_EQ(
       RCL_RET_ERROR, rcl_return_loaned_message_from_subscription(&subscription, loaned_message));
     rcl_reset_error();
-
-    return_code = RMW_RET_OK;
-    EXPECT_EQ(
-      RCL_RET_OK, rcl_return_loaned_message_from_subscription(&subscription, loaned_message))
-        << rcl_get_error_string().str;
   }
 
   EXPECT_EQ(RCL_RET_OK, rcl_subscription_fini(&subscription, this->node_ptr)) << rcl_get_error_string().str;
@@ -752,8 +783,26 @@ TEST_F(CLASSNAME(TestSubscriptionFixtureInit, RMW_IMPLEMENTATION), test_subscrip
     RCL_RET_SUBSCRIPTION_INVALID, rcl_take(&subscription_zero_init, &msg, &message_info, nullptr));
   rcl_reset_error();
 
+  rmw_ret_t rmw_take_with_info_returns = RMW_RET_OK;
+  auto mock = mocking_utils::patch(
+    "lib:rcl", rmw_take_with_info,
+    [&](auto, auto, bool * taken, auto...) {
+      *taken = false;
+      return rmw_take_with_info_returns;
+    });
+
   EXPECT_EQ(
     RCL_RET_SUBSCRIPTION_TAKE_FAILED, rcl_take(&subscription, &msg, &message_info, nullptr));
+  rcl_reset_error();
+
+  rmw_take_with_info_returns = RMW_RET_BAD_ALLOC;
+  EXPECT_EQ(
+    RCL_RET_BAD_ALLOC, rcl_take(&subscription, &msg, &message_info, nullptr));
+  rcl_reset_error();
+
+  rmw_take_with_info_returns = RMW_RET_ERROR;
+  EXPECT_EQ(
+    RCL_RET_ERROR, rcl_take(&subscription, &msg, &message_info, nullptr));
   rcl_reset_error();
 }
 
@@ -763,10 +812,11 @@ TEST_F(
   CLASSNAME(TestSubscriptionFixtureInit, RMW_IMPLEMENTATION),
   test_subscription_bad_take_serialized) {
   rcl_serialized_message_t serialized_msg = rmw_get_zero_initialized_serialized_message();
-  size_t initial_capacity_ser = 0u;
+  size_t initial_serialization_capacity = 0u;
   ASSERT_EQ(
     RCL_RET_OK, rmw_serialized_message_init(
-      &serialized_msg, initial_capacity_ser, &allocator)) << rcl_get_error_string().str;
+        &serialized_msg, initial_serialization_capacity, &allocator))
+      << rcl_get_error_string().str;
 
   EXPECT_EQ(
     RCL_RET_SUBSCRIPTION_INVALID,
@@ -778,7 +828,32 @@ TEST_F(
   rcl_reset_error();
 
   EXPECT_EQ(
+    RCL_RET_INVALID_ARGUMENT,
+    rcl_take_serialized_message(&subscription, nullptr, nullptr, nullptr));
+  rcl_reset_error();
+
+  rmw_ret_t rmw_take_serialized_message_with_info_returns = RMW_RET_OK;
+  auto mock = mocking_utils::patch(
+    "lib:rcl", rmw_take_serialized_message_with_info,
+    [&](auto, auto, bool * taken, auto...) {
+      *taken = false;
+      return rmw_take_serialized_message_with_info_returns;
+    });
+
+  EXPECT_EQ(
     RCL_RET_SUBSCRIPTION_TAKE_FAILED,
+    rcl_take_serialized_message(&subscription, &serialized_msg, nullptr, nullptr));
+  rcl_reset_error();
+
+  rmw_take_serialized_message_with_info_returns = RMW_RET_BAD_ALLOC;
+  EXPECT_EQ(
+      RCL_RET_BAD_ALLOC,
+      rcl_take_serialized_message(&subscription, &serialized_msg, nullptr, nullptr));
+  rcl_reset_error();
+
+  rmw_take_serialized_message_with_info_returns = RMW_RET_ERROR;
+  EXPECT_EQ(
+    RCL_RET_ERROR,
     rcl_take_serialized_message(&subscription, &serialized_msg, nullptr, nullptr));
   rcl_reset_error();
 }
@@ -828,24 +903,72 @@ TEST_F(
     rcl_take_sequence(&subscription, seq_size, &messages, &message_infos_short, nullptr));
   rcl_reset_error();
 
-  // This test fails for rmw_cyclonedds_cpp function rmw_take_sequence
-  // Tracked here: https://github.com/ros2/rmw_cyclonedds/issues/193
-  /*
+  EXPECT_EQ(
+    RCL_RET_INVALID_ARGUMENT,
+    rcl_take_sequence(&subscription, seq_size, nullptr, &message_infos, nullptr));
+  rcl_reset_error();
+
+  EXPECT_EQ(
+    RCL_RET_INVALID_ARGUMENT,
+    rcl_take_sequence(&subscription, seq_size, &messages, nullptr, nullptr));
+  rcl_reset_error();
+
+  rmw_ret_t rmw_take_sequence_returns = RMW_RET_OK;
+  auto mock = mocking_utils::patch(
+    "lib:rcl", rmw_take_sequence,
+    [&](auto, auto, auto, auto, size_t * taken, auto) {
+      *taken = 0u;
+      return rmw_take_sequence_returns;
+    });
+
   EXPECT_EQ(
     RCL_RET_SUBSCRIPTION_TAKE_FAILED,
     rcl_take_sequence(&subscription, seq_size, &messages, &message_infos, nullptr));
   rcl_reset_error();
-  */
+
+  rmw_take_sequence_returns = RMW_RET_BAD_ALLOC;
+  EXPECT_EQ(
+    RCL_RET_BAD_ALLOC,
+    rcl_take_sequence(&subscription, seq_size, &messages, &message_infos, nullptr));
+  rcl_reset_error();
+
+  rmw_take_sequence_returns = RMW_RET_ERROR;
+  EXPECT_EQ(
+    RCL_RET_ERROR,
+    rcl_take_sequence(&subscription, seq_size, &messages, &message_infos, nullptr));
+  rcl_reset_error();
+}
+
+/* Test for all failure modes in subscription get_publisher_count function.
+ */
+TEST_F(CLASSNAME(TestSubscriptionFixtureInit, RMW_IMPLEMENTATION), test_bad_get_publisher_count) {
+  size_t publisher_count = 0;
+  EXPECT_EQ(
+    RCL_RET_SUBSCRIPTION_INVALID,
+    rcl_subscription_get_publisher_count(nullptr, &publisher_count));
+  rcl_reset_error();
+
+  EXPECT_EQ(
+    RCL_RET_SUBSCRIPTION_INVALID,
+    rcl_subscription_get_publisher_count(&subscription_zero_init, &publisher_count));
+  rcl_reset_error();
+
+  EXPECT_EQ(
+    RCL_RET_INVALID_ARGUMENT,
+    rcl_subscription_get_publisher_count(&subscription, nullptr));
+  rcl_reset_error();
+
+  auto mock = mocking_utils::patch_and_return(
+    "lib:rcl", rmw_subscription_count_matched_publishers, RMW_RET_ERROR);
+  EXPECT_EQ(
+    RCL_RET_ERROR,
+    rcl_subscription_get_publisher_count(&subscription, &publisher_count));
+  rcl_reset_error();
 }
 
 /* Using bad arguments subscription methods
  */
 TEST_F(CLASSNAME(TestSubscriptionFixtureInit, RMW_IMPLEMENTATION), test_subscription_bad_argument) {
-  size_t pub_count = 0;
-
-  EXPECT_EQ(
-    RCL_RET_SUBSCRIPTION_INVALID, rcl_subscription_get_publisher_count(nullptr, &pub_count));
-  rcl_reset_error();
   EXPECT_EQ(NULL, rcl_subscription_get_actual_qos(nullptr));
   rcl_reset_error();
   EXPECT_FALSE(rcl_subscription_can_loan_messages(nullptr));
@@ -857,10 +980,6 @@ TEST_F(CLASSNAME(TestSubscriptionFixtureInit, RMW_IMPLEMENTATION), test_subscrip
   EXPECT_EQ(NULL, rcl_subscription_get_options(nullptr));
   rcl_reset_error();
 
-  EXPECT_EQ(
-    RCL_RET_SUBSCRIPTION_INVALID,
-    rcl_subscription_get_publisher_count(&subscription_zero_init, &pub_count));
-  rcl_reset_error();
   EXPECT_EQ(NULL, rcl_subscription_get_actual_qos(&subscription_zero_init));
   rcl_reset_error();
   EXPECT_FALSE(rcl_subscription_can_loan_messages(&subscription_zero_init));
