@@ -412,18 +412,24 @@ rcl_clock_add_jump_callback(
   }
 
   // Add the new callback, increasing the size of the callback list
-  rcl_jump_callback_info_t * callbacks = clock->allocator.reallocate(
-    clock->jump_callbacks, sizeof(rcl_jump_callback_info_t) * (clock->num_jump_callbacks + 1),
+  rcl_jump_callback_info_t * callbacks = clock->allocator.allocate(
+    sizeof(rcl_jump_callback_info_t) * (clock->num_jump_callbacks + 1),
     clock->allocator.state);
+
   if (NULL == callbacks) {
     RCL_SET_ERROR_MSG("Failed to realloc jump callbacks");
     return RCL_RET_BAD_ALLOC;
   }
+
+  memcpy(callbacks, clock->jump_callbacks,
+	 sizeof(rcl_jump_callback_info_t) * clock->num_jump_callbacks);
+  rcl_jump_callback_info_t * temp = clock->jump_callbacks;
   clock->jump_callbacks = callbacks;
   clock->jump_callbacks[clock->num_jump_callbacks].callback = callback;
   clock->jump_callbacks[clock->num_jump_callbacks].threshold = threshold;
   clock->jump_callbacks[clock->num_jump_callbacks].user_data = user_data;
   ++(clock->num_jump_callbacks);
+  clock->allocator.deallocate(temp, clock->allocator.state);
   return RCL_RET_OK;
 }
 
@@ -453,19 +459,26 @@ rcl_clock_remove_jump_callback(
   }
 
   // Shrink size of the callback array
-  if (clock->num_jump_callbacks == 1) {
+  if (--(clock->num_jump_callbacks) == 0) {
     clock->allocator.deallocate(clock->jump_callbacks, clock->allocator.state);
     clock->jump_callbacks = NULL;
   } else {
-    rcl_jump_callback_info_t * callbacks = clock->allocator.reallocate(
-      clock->jump_callbacks, sizeof(rcl_jump_callback_info_t) * (clock->num_jump_callbacks - 1),
+    // allocate first, then copy and swap
+    rcl_jump_callback_info_t * callbacks = clock->allocator.allocate(
+      sizeof(rcl_jump_callback_info_t) * clock->num_jump_callbacks,
       clock->allocator.state);
+
     if (NULL == callbacks) {
       RCL_SET_ERROR_MSG("Failed to shrink jump callbacks");
       return RCL_RET_BAD_ALLOC;
     }
+
+    memcpy(callbacks, clock->jump_callbacks,
+	    sizeof(rcl_jump_callback_info_t) * clock->num_jump_callbacks);
+    rcl_jump_callback_info_t * temp = clock->jump_callbacks;
     clock->jump_callbacks = callbacks;
+    clock->allocator.deallocate(temp, clock->allocator.state);
+
   }
-  --(clock->num_jump_callbacks);
   return RCL_RET_OK;
 }
